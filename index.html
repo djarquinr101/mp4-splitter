@@ -42,7 +42,8 @@
 
     <script>
         const { createFFmpeg, fetchFile } = FFmpeg;
-        // Using a reliable public CDN for the WebAssembly core helper
+        
+        // Swapping to clear absolute paths to avoid loading dropouts
         const ffmpeg = createFFmpeg({ 
             log: true,
             corePath: 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js'
