@@ -22,6 +22,22 @@
             <input type="file" id="video-input" accept="video/mp4" disabled
                    class="w-full text-sm text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-emerald-500 file:text-slate-900 hover:file:bg-emerald-400 cursor-pointer disabled:opacity-50">
             <p id="file-info" class="mt-2 text-xs text-slate-400"></p>
+            <div id="detect-settings" class="mt-4 grid grid-cols-2 gap-3 text-xs text-slate-300">
+                <label class="flex flex-col gap-1">Silence threshold (dB)
+                    <input id="opt-noise" type="number" value="-35" step="1" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm">
+                </label>
+                <label class="flex flex-col gap-1">Minimum gap (s)
+                    <input id="opt-mingap" type="number" value="1" step="0.1" min="0.5" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm">
+                </label>
+                <label class="flex flex-col gap-1">Minimum segment (s)
+                    <input id="opt-minseg" type="number" value="2" step="0.5" min="0.5" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm">
+                </label>
+                <label class="flex items-center gap-2 self-end pb-1">
+                    <input id="opt-black" type="checkbox" checked> Confirm gaps with black frames
+                </label>
+            </div>
+            <progress id="detect-progress" class="w-full mt-3 hidden" max="1" value="0"></progress>
+            <p id="detect-note" class="mt-2 text-xs text-amber-300"></p>
         </div>
 
         <div class="mb-6">

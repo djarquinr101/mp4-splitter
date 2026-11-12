@@ -15,6 +15,12 @@ const segmentsContainer = document.getElementById('segments-container');
 const addSegmentBtn = document.getElementById('add-segment-btn');
 const processBtn = document.getElementById('process-btn');
 const logOutput = document.getElementById('log-output');
+const optNoise = document.getElementById('opt-noise');
+const optMinGap = document.getElementById('opt-mingap');
+const optMinSeg = document.getElementById('opt-minseg');
+const optBlack = document.getElementById('opt-black');
+const detectProgress = document.getElementById('detect-progress');
+const detectNote = document.getElementById('detect-note');
 
 const STATUS_CLASSES = {
     info: "bg-amber-500/20 text-amber-300 border-amber-500/30",
@@ -42,7 +48,10 @@ async function initFFmpeg() {
 }
 initFFmpeg();
 
+let logSink = null; // when set, ffmpeg log messages are also collected here (detection passes)
+
 ffmpeg.setLogger(({ type, message }) => {
+    if (logSink !== null) logSink.push(message);
     logOutput.classList.remove('hidden');
     const logLine = document.createElement('div');
     logLine.textContent = `[${type}] ${message}`;
@@ -91,9 +100,10 @@ function addSegmentRow(start = "", end = "") {
     renumberRows();
 }
 
-addSegmentRow("00:00:00", "00:00:10");
-addSegmentRow("00:00:10", "00:00:25");
-addSegmentBtn.addEventListener('click', () => addSegmentRow());
+let listEdited = false; // true once the user has changed the segment list by hand
+addSegmentBtn.addEventListener('click', () => { addSegmentRow(); listEdited = true; });
+segmentsContainer.addEventListener('input', () => { listEdited = true; });
+segmentsContainer.addEventListener('click', (e) => { if (e.target.closest('button')) listEdited = true; });
 
 // ---- Input handling -----------------------------------------------
 
@@ -124,10 +134,149 @@ function readDuration(file) {
     });
 }
 
+// ---- Detection ----------------------------------------------------
+
+const RAW_MIN_SILENCE = 0.3; // seconds; ffmpeg reports silences this short so minGap can be changed without re-running
+const BLACK_ARGS = 'scale=160:-2,blackdetect=d=0.5:pic_th=0.98:pix_th=0.10';
+
+let currentRunId = 0;       // bumped on every file pick; stale runs discard their results
+let lastRun = Promise.resolve(); // ffmpeg.wasm runs one command at a time, so runs are chained
+let probe = null;           // { duration, hasAudio, hasVideo } for the loaded file
+let rawSilence = [];
+let rawBlack = null;        // null = black pass not run yet
+let rawSilenceDb = null;    // threshold the stored silence intervals were computed with
+let progressBase = 0;
+let progressSpan = 1;
+
+ffmpeg.setProgress(({ ratio }) => {
+    if (Number.isFinite(ratio)) detectProgress.value = Math.min(1, progressBase + ratio * progressSpan);
+});
+
+function readSettings() {
+    return {
+        noiseDb: Number(optNoise.value),
+        minGap: Number(optMinGap.value),
+        minSegment: Number(optMinSeg.value),
+        useBlack: optBlack.checked,
+    };
+}
+
+function formatTimeFine(sec) {
+    const h = String(Math.floor(sec / 3600)).padStart(2, '0');
+    const m = String(Math.floor((sec % 3600) / 60)).padStart(2, '0');
+    const s = (sec % 60).toFixed(2).padStart(5, '0');
+    return `${h}:${m}:${s}`;
+}
+
+// Runs one ffmpeg command and returns the log text it produced.
+async function runCollecting(args, base, span) {
+    const lines = [];
+    logSink = lines;
+    progressBase = base;
+    progressSpan = span;
+    try { await ffmpeg.run(...args); }
+    finally { logSink = null; }
+    return lines.join('\n');
+}
+
+async function silencePass(base, span) {
+    const db = readSettings().noiseDb;
+    const text = await runCollecting(
+        ['-i', 'input.mp4', '-vn', '-af', `silencedetect=noise=${db}dB:d=${RAW_MIN_SILENCE}`, '-f', 'null', '-'], base, span);
+    rawSilence = Detect.parseSilenceLog(text, probe.duration);
+    rawSilenceDb = db;
+}
+
+async function blackPass(base, span) {
+    const text = await runCollecting(['-i', 'input.mp4', '-an', '-vf', BLACK_ARGS, '-f', 'null', '-'], base, span);
+    rawBlack = Detect.parseBlackLog(text);
+}
+
+function renderSegments(segments) {
+    segmentsContainer.innerHTML = '';
+    segments.forEach(seg => addSegmentRow(formatTimeFine(seg.start), formatTimeFine(seg.end)));
+    listEdited = false;
+}
+
+// Rebuilds the segment list from stored raw intervals and the current settings (no ffmpeg work).
+function rebuildSegments() {
+    if (!probe) return;
+    const s = readSettings();
+    const gaps = Detect.buildGaps(rawSilence, rawBlack || [], probe, s);
+    const segments = Detect.buildSegments(gaps, probe.duration, s.minSegment);
+    detectNote.textContent = gaps.length === 0 ? "No gaps found — showing the whole video. Add parts by hand if needed." : "";
+    renderSegments(segments);
+}
+
+function setDetecting(on) {
+    detectProgress.classList.toggle('hidden', !on);
+    processBtn.disabled = on;
+    [optNoise, optMinGap, optMinSeg, optBlack].forEach(el => { el.disabled = on; });
+}
+
+function ffmpegHasInput() {
+    try { ffmpeg.FS('stat', 'input.mp4'); return true; } catch (_) { return false; }
+}
+
+function clearInputFile() {
+    try { ffmpeg.FS('unlink', 'input.mp4'); } catch (_) { /* not there */ }
+}
+
+async function runDetection(file, runId) {
+    const stale = () => runId !== currentRunId;
+    if (stale()) return;
+    setDetecting(true);
+    detectProgress.value = 0;
+    probe = null; rawSilence = []; rawBlack = null; rawSilenceDb = null;
+    try {
+        setStatus("Loading video for analysis...");
+        clearInputFile();
+        ffmpeg.FS('writeFile', 'input.mp4', await fetchFile(file));
+        if (stale()) return;
+
+        const probeText = await runCollecting(['-i', 'input.mp4', '-t', '0', '-f', 'null', '-'], 0, 0);
+        const info = Detect.parseProbeLog(probeText);
+        if (stale()) return;
+        const duration = info.duration ?? videoDuration;
+        if (duration === null || (!info.hasAudio && !info.hasVideo)) throw new Error("could not read this video");
+        probe = { duration, hasAudio: info.hasAudio, hasVideo: info.hasVideo };
+
+        const s = readSettings();
+        const needBlack = probe.hasVideo && (s.useBlack || !probe.hasAudio);
+        const passes = (probe.hasAudio ? 1 : 0) + (needBlack ? 1 : 0);
+        let done = 0;
+        if (probe.hasAudio) {
+            setStatus("Looking for silence...");
+            await silencePass(done / passes, 1 / passes); done++;
+            if (stale()) return;
+        }
+        if (needBlack) {
+            setStatus("Looking for black frames...");
+            await blackPass(done / passes, 1 / passes);
+            if (stale()) return;
+        }
+        rebuildSegments();
+        setStatus("Segments detected — review the list, rename, then export.", "ok");
+    } catch (err) {
+        if (stale()) return;
+        console.error(err);
+        const dur = probe ? probe.duration : videoDuration;
+        detectNote.textContent = "";
+        renderSegments(dur ? [{ start: 0, end: dur }] : []);
+        setStatus(`Automatic detection failed (${err.message || err}). Add parts by hand.`, "error");
+    } finally {
+        setDetecting(false); // a queued newer run switches it back on immediately
+    }
+}
+
 videoInput.addEventListener('change', async () => {
     const file = videoInput.files[0];
+    const runId = ++currentRunId;
     videoDuration = null;
+    probe = null;
     fileInfo.textContent = "";
+    detectNote.textContent = "";
+    segmentsContainer.innerHTML = '';
     if (!file) return;
     const sizeMB = (file.size / 1024 / 1024).toFixed(1);
     if (file.size > MAX_INPUT_BYTES) {
@@ -135,10 +284,42 @@ videoInput.addEventListener('change', async () => {
         return;
     }
     videoDuration = await readDuration(file);
+    if (runId !== currentRunId) return;
     fileInfo.textContent = videoDuration === null
         ? `${file.name} — ${sizeMB} MB`
         : `${file.name} — ${sizeMB} MB — duration ${formatTime(videoDuration)}`;
+    lastRun = lastRun.then(() => runDetection(file, runId));
 });
+
+// Settings changes: gap/segment lengths only rebuild; threshold and black toggle may need a pass.
+async function onSettingsChange() {
+    if (!probe) return;
+    if (listEdited && !confirm("Changing detection settings replaces the segments you edited. Continue?")) return;
+    const runId = currentRunId;
+    const s = readSettings();
+    const needSilence = probe.hasAudio && rawSilenceDb !== s.noiseDb;
+    const needBlack = probe.hasVideo && (s.useBlack || !probe.hasAudio) && rawBlack === null;
+    if (needSilence || needBlack) {
+        lastRun = lastRun.then(async () => {
+            if (runId !== currentRunId) return;
+            setDetecting(true);
+            detectProgress.value = 0;
+            try {
+                if (needSilence) { setStatus("Re-checking silence..."); await silencePass(0, needBlack ? 0.5 : 1); }
+                if (needBlack && runId === currentRunId) { setStatus("Looking for black frames..."); await blackPass(needSilence ? 0.5 : 0, needSilence ? 0.5 : 1); }
+                if (runId === currentRunId) { rebuildSegments(); setStatus("Segments updated.", "ok"); }
+            } catch (err) {
+                console.error(err);
+                setStatus(`Detection failed (${err.message || err}).`, "error");
+            } finally {
+                setDetecting(false);
+            }
+        });
+    } else {
+        rebuildSegments();
+    }
+}
+[optNoise, optMinGap, optMinSeg, optBlack].forEach(el => el.addEventListener('change', onSettingsChange));
 
 // Returns [{start, end, label}] or throws an Error with a user-facing message.
 function collectSegments() {
@@ -190,12 +371,13 @@ processBtn.addEventListener('click', async () => {
     videoInput.disabled = true;
     const base = safeBaseName(file.name);
     const results = [];
-    let inputWritten = false;
 
     try {
-        setStatus("Loading video into memory...");
-        ffmpeg.FS('writeFile', 'input.mp4', await fetchFile(file));
-        inputWritten = true;
+        await lastRun; // wait for any detection still using ffmpeg
+        if (!ffmpegHasInput()) {
+            setStatus("Loading video into memory...");
+            ffmpeg.FS('writeFile', 'input.mp4', await fetchFile(file));
+        }
 
         // ffmpeg.wasm 0.11 runs one command at a time, so parts are processed sequentially.
         for (const seg of segments) {
@@ -231,9 +413,6 @@ processBtn.addEventListener('click', async () => {
         console.error(err);
         setStatus(`Something went wrong: ${err.message || err}. Try a smaller file or reload the page.`, "error");
     } finally {
-        if (inputWritten) {
-            try { ffmpeg.FS('unlink', 'input.mp4'); } catch (_) { /* already gone */ }
-        }
         processBtn.disabled = false;
         videoInput.disabled = false;
     }
