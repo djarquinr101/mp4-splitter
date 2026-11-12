@@ -64,46 +64,91 @@ ffmpeg.setLogger(({ type, message }) => {
 function renumberRows() {
     segmentsContainer.querySelectorAll('.segment-row').forEach((row, i) => {
         row.querySelector('.part-label').textContent = `Part ${i + 1}:`;
+        row.querySelector('.segment-name').placeholder = `Part ${i + 1}`;
     });
 }
 
-function addSegmentRow(start = "", end = "") {
+function addSegmentRow(start = "", end = "", name = "") {
     const row = document.createElement('div');
-    row.className = "segment-row flex items-center space-x-3 bg-slate-800/50 p-2 rounded border border-slate-700/50";
+    row.className = "segment-row flex items-center gap-2 bg-slate-800/50 p-2 rounded border border-slate-700/50";
+    const inputClass = "bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm focus:outline-none focus:border-emerald-500";
 
     const label = document.createElement('span');
     label.className = "part-label text-xs text-slate-400 font-bold whitespace-nowrap";
 
+    const nameInput = document.createElement('input');
+    nameInput.type = "text";
+    nameInput.value = name;
+    nameInput.setAttribute('aria-label', 'Segment name');
+    nameInput.className = `segment-name ${inputClass} w-full min-w-0`;
+
     const startInput = document.createElement('input');
     startInput.type = "text";
-    startInput.placeholder = "Start (e.g. 00:01:20)";
+    startInput.placeholder = "Start";
     startInput.value = start;
     startInput.setAttribute('aria-label', 'Start time');
-    startInput.className = "start-time bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm w-full focus:outline-none focus:border-emerald-500";
+    startInput.className = `start-time ${inputClass} w-28`;
 
     const endInput = document.createElement('input');
     endInput.type = "text";
-    endInput.placeholder = "End (e.g. 00:02:05)";
+    endInput.placeholder = "End";
     endInput.value = end;
     endInput.setAttribute('aria-label', 'End time');
-    endInput.className = "end-time bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm w-full focus:outline-none focus:border-emerald-500";
+    endInput.className = `end-time ${inputClass} w-28`;
+
+    const playBtn = document.createElement('button');
+    playBtn.type = "button";
+    playBtn.textContent = "▶";
+    playBtn.setAttribute('aria-label', 'Preview this part');
+    playBtn.className = "play-btn text-emerald-400 hover:text-emerald-300 text-sm px-2 cursor-pointer";
+    playBtn.addEventListener('click', () => playSegment(startInput.value, endInput.value));
 
     const removeBtn = document.createElement('button');
     removeBtn.type = "button";
     removeBtn.textContent = "×";
     removeBtn.setAttribute('aria-label', 'Remove part');
-    removeBtn.className = "text-red-400 hover:text-red-300 text-sm font-bold px-2 cursor-pointer";
+    removeBtn.className = "remove-btn text-red-400 hover:text-red-300 text-sm font-bold px-2 cursor-pointer";
     removeBtn.addEventListener('click', () => { row.remove(); renumberRows(); });
 
-    row.append(label, startInput, endInput, removeBtn);
+    row.append(label, nameInput, startInput, endInput, playBtn, removeBtn);
     segmentsContainer.appendChild(row);
     renumberRows();
+}
+
+// ---- Preview player -----------------------------------------------
+
+const preview = document.getElementById('preview');
+let previewUrl = null;
+let previewStopAt = null;
+
+preview.addEventListener('timeupdate', () => {
+    if (previewStopAt !== null && preview.currentTime >= previewStopAt) {
+        preview.pause();
+        previewStopAt = null;
+    }
+});
+
+function setPreviewFile(file) {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = file ? URL.createObjectURL(file) : null;
+    previewStopAt = null;
+    if (previewUrl) { preview.src = previewUrl; preview.classList.remove('hidden'); }
+    else { preview.removeAttribute('src'); preview.classList.add('hidden'); }
+}
+
+function playSegment(startText, endText) {
+    const start = parseTime(startText);
+    const end = parseTime(endText);
+    if (start === null || end === null || end <= start) return;
+    preview.currentTime = start;
+    previewStopAt = end;
+    preview.play();
 }
 
 let listEdited = false; // true once the user has changed the segment list by hand
 addSegmentBtn.addEventListener('click', () => { addSegmentRow(); listEdited = true; });
 segmentsContainer.addEventListener('input', () => { listEdited = true; });
-segmentsContainer.addEventListener('click', (e) => { if (e.target.closest('button')) listEdited = true; });
+segmentsContainer.addEventListener('click', (e) => { if (e.target.closest('.remove-btn')) listEdited = true; });
 
 // ---- Input handling -----------------------------------------------
 
@@ -277,6 +322,7 @@ videoInput.addEventListener('change', async () => {
     fileInfo.textContent = "";
     detectNote.textContent = "";
     segmentsContainer.innerHTML = '';
+    setPreviewFile(file || null);
     if (!file) return;
     const sizeMB = (file.size / 1024 / 1024).toFixed(1);
     if (file.size > MAX_INPUT_BYTES) {
@@ -321,11 +367,11 @@ async function onSettingsChange() {
 }
 [optNoise, optMinGap, optMinSeg, optBlack].forEach(el => el.addEventListener('change', onSettingsChange));
 
-// Returns [{start, end, label}] or throws an Error with a user-facing message.
+// Returns [{start, end, n, name}] or throws an Error with a user-facing message.
 function collectSegments() {
     const rows = segmentsContainer.querySelectorAll('.segment-row');
     if (rows.length === 0) throw new Error("Add at least one part.");
-    return Array.from(rows).map((row, i) => {
+    const segments = Array.from(rows).map((row, i) => {
         const n = i + 1;
         const startText = row.querySelector('.start-time').value;
         const endText = row.querySelector('.end-time').value;
@@ -338,8 +384,12 @@ function collectSegments() {
         if (videoDuration !== null && start >= videoDuration) {
             throw new Error(`Part ${n}: start is beyond the video length (${formatTime(videoDuration)}).`);
         }
-        return { start: startText.trim(), end: endText.trim(), n };
+        const name = Detect.sanitizeName(row.querySelector('.segment-name').value, `Part ${n}`);
+        return { start: startText.trim(), end: endText.trim(), n, name };
     });
+    const unique = Detect.uniqueNames(segments.map(seg => seg.name));
+    segments.forEach((seg, i) => { seg.name = unique[i]; });
+    return segments;
 }
 
 function safeBaseName(name) {
@@ -392,7 +442,7 @@ processBtn.addEventListener('click', async () => {
                     tmpName
                 );
                 const data = ffmpeg.FS('readFile', tmpName);
-                results.push({ name: `part_${seg.n}_${base}.mp4`, data: new Uint8Array(data) });
+                results.push({ name: `${seg.name}.mp4`, data: new Uint8Array(data) });
             } finally {
                 try { ffmpeg.FS('unlink', tmpName); } catch (_) { /* never created */ }
             }
