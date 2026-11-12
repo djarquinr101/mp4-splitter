@@ -1,175 +1,288 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Fast MP4 Splitter (Lossless)</title>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen p-6 font-sans">
 
     <div class="max-w-3xl mx-auto bg-slate-800 p-6 rounded-xl shadow-lg border border-slate-700">
         <h1 class="text-2xl font-bold mb-4 text-emerald-400 text-center">⚡ Instant MP4 Splitter (No Quality Loss)</h1>
-        
-        <div id="status" class="text-center p-2 mb-4 bg-amber-500/20 text-amber-300 rounded border border-amber-500/30 text-sm">
+
+        <div id="status" role="status" aria-live="polite" class="text-center p-2 mb-4 bg-amber-500/20 text-amber-300 rounded border border-amber-500/30 text-sm">
             Loading FFmpeg core into your browser...
         </div>
 
         <div class="mb-6">
-            <label class="block text-sm font-semibold mb-2">1. Load your MP4 Video:</label>
+            <label for="video-input" class="block text-sm font-semibold mb-2">1. Load your MP4 Video:</label>
             <input type="file" id="video-input" accept="video/mp4" disabled
                    class="w-full text-sm text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-emerald-500 file:text-slate-900 hover:file:bg-emerald-400 cursor-pointer disabled:opacity-50">
+            <p id="file-info" class="mt-2 text-xs text-slate-400"></p>
         </div>
 
         <div class="mb-6">
-            <label class="block text-sm font-semibold mb-2">2. Define Segments (HH:MM:SS or Seconds):</label>
-            <div id="segments-container" class="space-y-3">
-                </div>
-            <button id="add-segment-btn" class="mt-3 text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-1.5 rounded border border-slate-600 transition-all">
+            <span class="block text-sm font-semibold mb-2">2. Define Segments (HH:MM:SS, MM:SS or seconds):</span>
+            <div id="segments-container" class="space-y-3"></div>
+            <button id="add-segment-btn" type="button" class="mt-3 text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-1.5 rounded border border-slate-600 transition-all">
                 + Add Another Part
             </button>
+            <p class="mt-3 text-xs text-slate-500">
+                Lossless cuts can only start on keyframes, so a part may begin slightly before the start time you enter.
+            </p>
         </div>
 
         <button id="process-btn" disabled
                 class="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-900 font-bold py-3 px-4 rounded-md transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
-            Split and Export All Parts Simultaneously
+            Split and Export All Parts
         </button>
 
-        <div id="log-output" class="mt-6 p-4 bg-slate-950 rounded-lg text-xs font-mono max-h-40 overflow-y-auto border border-slate-800 text-slate-400 hidden">
-            </div>
+        <div id="log-output" class="mt-6 p-4 bg-slate-950 rounded-lg text-xs font-mono max-h-40 overflow-y-auto border border-slate-800 text-slate-400 hidden"></div>
     </div>
 
     <script>
         const { createFFmpeg, fetchFile } = FFmpeg;
-        
-        // Swapping to clear absolute paths to avoid loading dropouts
-        const ffmpeg = createFFmpeg({ 
+
+        // ffmpeg.wasm keeps the whole input + outputs in WebAssembly memory (~2 GB cap).
+        const MAX_INPUT_BYTES = 1.5 * 1024 * 1024 * 1024;
+
+        const ffmpeg = createFFmpeg({
             log: true,
             corePath: 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js'
         });
 
         const statusDiv = document.getElementById('status');
         const videoInput = document.getElementById('video-input');
+        const fileInfo = document.getElementById('file-info');
         const segmentsContainer = document.getElementById('segments-container');
         const addSegmentBtn = document.getElementById('add-segment-btn');
         const processBtn = document.getElementById('process-btn');
         const logOutput = document.getElementById('log-output');
 
-        let segmentCount = 0;
-        let originalFileName = "video.mp4";
+        const STATUS_CLASSES = {
+            info: "bg-amber-500/20 text-amber-300 border-amber-500/30",
+            ok: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
+            error: "bg-red-500/20 text-red-300 border-red-500/30"
+        };
 
-        // Initialize FFmpeg on load
+        function setStatus(text, kind = "info") {
+            statusDiv.className = `text-center p-2 mb-4 rounded border text-sm ${STATUS_CLASSES[kind]}`;
+            statusDiv.textContent = text;
+        }
+
+        let videoDuration = null; // seconds, null if unknown
+
         async function initFFmpeg() {
             try {
                 await ffmpeg.load();
-                statusDiv.className = "text-center p-2 mb-4 bg-emerald-500/20 text-emerald-300 rounded border border-emerald-500/30 text-sm";
-                statusDiv.innerText = "🚀 FFmpeg Ready locally in your browser!";
-                videoInput.removeAttribute('disabled');
-                processBtn.removeAttribute('disabled');
+                setStatus("🚀 FFmpeg ready locally in your browser! Nothing is uploaded.", "ok");
+                videoInput.disabled = false;
+                processBtn.disabled = false;
             } catch (e) {
-                statusDiv.className = "text-center p-2 mb-4 bg-red-500/20 text-red-300 rounded border border-red-500/30 text-sm";
-                statusDiv.innerText = "Error loading browser FFmpeg engine. Try reloading.";
+                setStatus("Error loading browser FFmpeg engine. Try reloading.", "error");
                 console.error(e);
             }
         }
         initFFmpeg();
 
-        // FFmpeg console output redirection
         ffmpeg.setLogger(({ type, message }) => {
             logOutput.classList.remove('hidden');
             const logLine = document.createElement('div');
-            logLine.innerText = `[${type}] ${message}`;
+            logLine.textContent = `[${type}] ${message}`;
             logOutput.appendChild(logLine);
             logOutput.scrollTop = logOutput.scrollHeight;
         });
 
-        // Add segment input row
-        function addSegmentRow(start = "", end = "") {
-            segmentCount++;
-            const row = document.createElement('div');
-            row.className = "flex items-center space-x-3 bg-slate-800/50 p-2 rounded border border-slate-700/50";
-            row.id = `segment-row-${segmentCount}`;
-            row.innerHTML = `
-                <span class="text-xs text-slate-400 font-bold">Part ${segmentCount}:</span>
-                <input type="text" placeholder="Start (e.g. 00:01:20)" value="${start}" class="start-time bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm w-full focus:outline-none focus:border-emerald-500">
-                <input type="text" placeholder="End (e.g. 00:02:05)" value="${end}" class="end-time bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm w-full focus:outline-none focus:border-emerald-500">
-                <button onclick="document.getElementById('segment-row-${segmentCount}').remove()" class="text-red-400 hover:text-red-300 text-sm font-bold px-2 cursor-pointer">×</button>
-            `;
-            segmentsContainer.appendChild(row);
+        // ---- Segment rows -------------------------------------------------
+
+        function renumberRows() {
+            segmentsContainer.querySelectorAll('.segment-row').forEach((row, i) => {
+                row.querySelector('.part-label').textContent = `Part ${i + 1}:`;
+            });
         }
 
-        // Initialize with 2 placeholder splits
+        function addSegmentRow(start = "", end = "") {
+            const row = document.createElement('div');
+            row.className = "segment-row flex items-center space-x-3 bg-slate-800/50 p-2 rounded border border-slate-700/50";
+
+            const label = document.createElement('span');
+            label.className = "part-label text-xs text-slate-400 font-bold whitespace-nowrap";
+
+            const startInput = document.createElement('input');
+            startInput.type = "text";
+            startInput.placeholder = "Start (e.g. 00:01:20)";
+            startInput.value = start;
+            startInput.setAttribute('aria-label', 'Start time');
+            startInput.className = "start-time bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm w-full focus:outline-none focus:border-emerald-500";
+
+            const endInput = document.createElement('input');
+            endInput.type = "text";
+            endInput.placeholder = "End (e.g. 00:02:05)";
+            endInput.value = end;
+            endInput.setAttribute('aria-label', 'End time');
+            endInput.className = "end-time bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm w-full focus:outline-none focus:border-emerald-500";
+
+            const removeBtn = document.createElement('button');
+            removeBtn.type = "button";
+            removeBtn.textContent = "×";
+            removeBtn.setAttribute('aria-label', 'Remove part');
+            removeBtn.className = "text-red-400 hover:text-red-300 text-sm font-bold px-2 cursor-pointer";
+            removeBtn.addEventListener('click', () => { row.remove(); renumberRows(); });
+
+            row.append(label, startInput, endInput, removeBtn);
+            segmentsContainer.appendChild(row);
+            renumberRows();
+        }
+
         addSegmentRow("00:00:00", "00:00:10");
         addSegmentRow("00:00:10", "00:00:25");
         addSegmentBtn.addEventListener('click', () => addSegmentRow());
 
-        videoInput.addEventListener('change', (e) => {
-            if(e.target.files[0]) originalFileName = e.target.files[0].name;
+        // ---- Input handling -----------------------------------------------
+
+        function formatTime(sec) {
+            const s = Math.floor(sec);
+            const h = String(Math.floor(s / 3600)).padStart(2, '0');
+            const m = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+            const r = String(s % 60).padStart(2, '0');
+            return `${h}:${m}:${r}`;
+        }
+
+        // Accepts "90", "90.5", "1:30", "01:30:00" (optionally with fractional seconds). Returns seconds or null.
+        function parseTime(text) {
+            const parts = text.trim().split(':');
+            if (parts.length > 3 || parts.some(p => !/^\d+(\.\d+)?$/.test(p))) return null;
+            return parts.reduce((acc, p) => acc * 60 + parseFloat(p), 0);
+        }
+
+        function readDuration(file) {
+            return new Promise(resolve => {
+                const url = URL.createObjectURL(file);
+                const v = document.createElement('video');
+                v.preload = 'metadata';
+                const done = (d) => { URL.revokeObjectURL(url); resolve(Number.isFinite(d) ? d : null); };
+                v.onloadedmetadata = () => done(v.duration);
+                v.onerror = () => done(null);
+                v.src = url;
+            });
+        }
+
+        videoInput.addEventListener('change', async () => {
+            const file = videoInput.files[0];
+            videoDuration = null;
+            fileInfo.textContent = "";
+            if (!file) return;
+            const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+            if (file.size > MAX_INPUT_BYTES) {
+                fileInfo.textContent = `⚠ ${sizeMB} MB is too large for in-browser processing (limit ≈ ${MAX_INPUT_BYTES / 1024 / 1024 / 1024} GB).`;
+                return;
+            }
+            videoDuration = await readDuration(file);
+            fileInfo.textContent = videoDuration === null
+                ? `${file.name} — ${sizeMB} MB`
+                : `${file.name} — ${sizeMB} MB — duration ${formatTime(videoDuration)}`;
         });
 
-        // The core splitting and exporting logic
+        // Returns [{start, end, label}] or throws an Error with a user-facing message.
+        function collectSegments() {
+            const rows = segmentsContainer.querySelectorAll('.segment-row');
+            if (rows.length === 0) throw new Error("Add at least one part.");
+            return Array.from(rows).map((row, i) => {
+                const n = i + 1;
+                const startText = row.querySelector('.start-time').value;
+                const endText = row.querySelector('.end-time').value;
+                if (!startText.trim() || !endText.trim()) throw new Error(`Part ${n}: fill in both start and end.`);
+                const start = parseTime(startText);
+                const end = parseTime(endText);
+                if (start === null) throw new Error(`Part ${n}: "${startText}" is not a valid time.`);
+                if (end === null) throw new Error(`Part ${n}: "${endText}" is not a valid time.`);
+                if (end <= start) throw new Error(`Part ${n}: end must be after start.`);
+                if (videoDuration !== null && start >= videoDuration) {
+                    throw new Error(`Part ${n}: start is beyond the video length (${formatTime(videoDuration)}).`);
+                }
+                return { start: startText.trim(), end: endText.trim(), n };
+            });
+        }
+
+        function safeBaseName(name) {
+            return name.replace(/\.mp4$/i, '').replace(/[^\w.\- ]+/g, '_') || 'video';
+        }
+
+        function triggerDownload(blob, filename) {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 10000);
+        }
+
+        // ---- Split & export -----------------------------------------------
+
         processBtn.addEventListener('click', async () => {
             const file = videoInput.files[0];
-            if (!file) {
-                alert("Please select an MP4 video file first!");
-                return;
-            }
+            if (!file) { alert("Please select an MP4 video file first!"); return; }
+            if (file.size > MAX_INPUT_BYTES) { alert("This file is too large to process in the browser."); return; }
 
-            const rows = segmentsContainer.querySelectorAll('[id^="segment-row-"]');
-            if (rows.length === 0) {
-                alert("Please add at least one segment profile.");
-                return;
-            }
+            let segments;
+            try { segments = collectSegments(); }
+            catch (err) { setStatus(err.message, "error"); return; }
 
             processBtn.disabled = true;
-            statusDiv.innerText = "Processing video streams losslessly...";
+            videoInput.disabled = true;
+            const base = safeBaseName(file.name);
+            const results = [];
+            let inputWritten = false;
 
-            // Write the primary source file to FFmpeg's virtual memory context
-            ffmpeg.FS('writeFile', 'input.mp4', await fetchFile(file));
+            try {
+                setStatus("Loading video into memory...");
+                ffmpeg.FS('writeFile', 'input.mp4', await fetchFile(file));
+                inputWritten = true;
 
-            const processingPromises = Array.from(rows).map(async (row, index) => {
-                const start = row.querySelector('.start-time').value.trim();
-                const end = row.querySelector('.end-time').value.trim();
-                const outputName = `part_${index + 1}_${originalFileName}`;
+                // ffmpeg.wasm 0.11 runs one command at a time, so parts are processed sequentially.
+                for (const seg of segments) {
+                    setStatus(`Cutting part ${seg.n} of ${segments.length} losslessly...`);
+                    const tmpName = `part_${seg.n}.mp4`;
+                    try {
+                        await ffmpeg.run(
+                            '-ss', seg.start, '-to', seg.end, '-i', 'input.mp4',
+                            '-map', '0:v?', '-map', '0:a?', '-map', '0:s?',
+                            '-c', 'copy',
+                            '-avoid_negative_ts', 'make_zero',
+                            tmpName
+                        );
+                        const data = ffmpeg.FS('readFile', tmpName);
+                        results.push({ name: `part_${seg.n}_${base}.mp4`, data: new Uint8Array(data) });
+                    } finally {
+                        try { ffmpeg.FS('unlink', tmpName); } catch (_) { /* never created */ }
+                    }
+                }
 
-                if(!start || !end) return;
-
-                // Execution command: -ss (start), -to (end), -c copy (direct raw data copy)
-                // Using precise positioning flags for flawless splits
-                await ffmpeg.run('-ss', start, '-to', end, '-i', 'input.mp4', '-c', 'copy', outputName);
-
-                // Fetch resulting raw bytes back out of virtual space
-                const data = ffmpeg.FS('readFile', outputName);
-
-                // Instantly bundle binary data payload to clean native file downloads
-                const blob = new Blob([data.buffer], { type: 'video/mp4' });
-                const url = URL.createObjectURL(blob);
-                
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = outputName;
-                document.body.appendChild(a);
-                a.click();
-                
-                // Cleanup browser pointers cleanly
-                setTimeout(() => {
-                    URL.revokeObjectURL(url);
-                    a.remove();
-                }, 10000);
-
-                // Clean virtual drive file allocation space
-                ffmpeg.FS('unlink', outputName);
-            });
-
-            // Await processing execution context simultaneously across stack jobs
-            await Promise.all(processingPromises);
-
-            // Clean master virtual file
-            ffmpeg.FS('unlink', 'input.mp4');
-
-            statusDiv.innerText = "🎉 All parts successfully exported simultaneously!";
-            processBtn.disabled = false;
+                if (results.length === 1) {
+                    triggerDownload(new Blob([results[0].data], { type: 'video/mp4' }), results[0].name);
+                } else {
+                    setStatus("Packing parts into a zip...");
+                    const zip = new JSZip();
+                    // MP4 is already compressed; store without re-deflating.
+                    results.forEach(r => zip.file(r.name, r.data, { compression: 'STORE' }));
+                    const zipBlob = await zip.generateAsync({ type: 'blob' });
+                    triggerDownload(zipBlob, `${base}_parts.zip`);
+                }
+                setStatus(`🎉 Exported ${results.length} part${results.length > 1 ? 's' : ''}.`, "ok");
+            } catch (err) {
+                console.error(err);
+                setStatus(`Something went wrong: ${err.message || err}. Try a smaller file or reload the page.`, "error");
+            } finally {
+                if (inputWritten) {
+                    try { ffmpeg.FS('unlink', 'input.mp4'); } catch (_) { /* already gone */ }
+                }
+                processBtn.disabled = false;
+                videoInput.disabled = false;
+            }
         });
     </script>
 </body>
