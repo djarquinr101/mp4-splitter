@@ -62,20 +62,18 @@
     return sortByStart(gaps.filter((g) => g.end - g.start >= s.minGap));
   }
 
+  const EDGE_TOLERANCE = 0.5; // a gap this close to the video's start/end is an intro/outro, not a split point
+
+  // Segments are the spans strictly between gaps, so no gap is ever part of a segment.
   function buildSegments(gaps, duration, minSegment) {
     if (gaps.length === 0) return [{ start: 0, end: duration }];
-    const mid = (g) => (g.start + g.end) / 2;
-    const cuts = gaps.map(mid);
+    const spans = [];
     const first = gaps[0];
     const last = gaps[gaps.length - 1];
-    const points = [];
-    if (first.start > 0) points.push(0);
-    points.push(...cuts);
-    if (last.end < duration) points.push(duration);
-    const segments = [];
-    for (let i = 0; i + 1 < points.length; i++) {
-      if (points[i + 1] - points[i] >= minSegment) segments.push({ start: points[i], end: points[i + 1] });
-    }
+    if (first.start > EDGE_TOLERANCE) spans.push({ start: 0, end: first.start });
+    for (let i = 0; i + 1 < gaps.length; i++) spans.push({ start: gaps[i].end, end: gaps[i + 1].start });
+    if (last.end < duration - EDGE_TOLERANCE) spans.push({ start: last.end, end: duration });
+    const segments = spans.filter((seg) => seg.end - seg.start >= minSegment);
     return segments.length > 0 ? segments : [{ start: 0, end: duration }];
   }
 
