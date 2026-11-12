@@ -54,7 +54,47 @@
     return sortByStart(out);
   }
 
-  const api = { parseProbeLog, parseSilenceLog, parseBlackLog, intersectIntervals };
+  function buildGaps(silence, black, probe, s) {
+    let gaps;
+    if (!probe.hasAudio) gaps = black;
+    else if (!probe.hasVideo || !s.useBlack) gaps = silence;
+    else gaps = intersectIntervals(silence, black);
+    return sortByStart(gaps.filter((g) => g.end - g.start >= s.minGap));
+  }
+
+  function buildSegments(gaps, duration, minSegment) {
+    if (gaps.length === 0) return [{ start: 0, end: duration }];
+    const mid = (g) => (g.start + g.end) / 2;
+    const cuts = gaps.map(mid);
+    const first = gaps[0];
+    const last = gaps[gaps.length - 1];
+    const points = [];
+    if (first.start > 0) points.push(0);
+    points.push(...cuts);
+    if (last.end < duration) points.push(duration);
+    const segments = [];
+    for (let i = 0; i + 1 < points.length; i++) {
+      if (points[i + 1] - points[i] >= minSegment) segments.push({ start: points[i], end: points[i + 1] });
+    }
+    return segments;
+  }
+
+  function sanitizeName(name, fallback) {
+    const cleaned = name.trim().replace(/[^\w.\- ]+/g, '_');
+    return cleaned === '' ? fallback : cleaned;
+  }
+
+  function uniqueNames(names) {
+    const seen = new Map();
+    return names.map((name) => {
+      const key = name.toLowerCase();
+      const count = (seen.get(key) || 0) + 1;
+      seen.set(key, count);
+      return count === 1 ? name : `${name} (${count})`;
+    });
+  }
+
+  const api = { parseProbeLog, parseSilenceLog, parseBlackLog, intersectIntervals, buildGaps, buildSegments, sanitizeName, uniqueNames };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Detect = api;
 })(typeof window !== 'undefined' ? window : globalThis);
