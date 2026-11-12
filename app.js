@@ -454,7 +454,7 @@ processBtn.addEventListener('click', async () => {
                         '-ss', seg.start, '-to', seg.end, '-i', 'input.mp4',
                         '-map', '0:v?', '-map', '0:a?', '-map', '0:s?',
                         '-c', 'copy',
-                        '-avoid_negative_ts', 'make_zero',
+                        '-avoid_negative_ts', 'disabled', // keyframe pre-roll stays in the file but the MP4 edit list hides it
                         tmpName
                     );
                     const data = ffmpeg.FS('readFile', tmpName);

@@ -25,8 +25,11 @@ If the video has no audio, black frames alone are used; if it has no video track
 
 ### Good to know
 
-- Lossless cuts can only start on keyframes, so a part may begin slightly before the time shown.
-  Cut points are placed in the middle of each gap to keep this from pulling in neighbouring content.
+- Parts are cut exactly at the gap edges, so no gap is included. Lossless cuts can only start on
+  keyframes, so each file may also contain a short run of frames before its start; the MP4 edit
+  list hides them (checked in Chrome and ffmpeg). Players or editors that ignore edit lists would
+  show them, and files can be a little larger. Detection is accurate to about a frame or two.
+- A black or silent intro/outro (a gap within 0.5 s of the start or end) does not create an extra part.
 - Everything is held in browser memory: files over 1.5 GB are refused.
 - ffmpeg.wasm 0.11 needs `SharedArrayBuffer`, which is why `vercel.json` sends the COOP/COEP headers.
 
@@ -50,7 +53,7 @@ Generate test videos with known gaps (needs ffmpeg), written to `tests/fixtures/
 bash tests/make-test-video.sh
 ```
 
-`gaps.mp4` has gaps at 8-11 s and 19-22 s, so expect cuts near 9.5 s and 20.5 s.
+`gaps.mp4` has gaps at 8-11 s and 19-22 s, so expect parts of about 0-8, 11-19 and 22-30 s.
 
 ## Layout
 

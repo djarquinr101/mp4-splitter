@@ -64,19 +64,19 @@ test('buildGaps uses silence alone when there is no video track', () => {
   assert.deepEqual(D.buildGaps([{ start: 10, end: 13 }], [], p, s), [{ start: 10, end: 13 }]);
 });
 
-test('buildSegments cuts at gap midpoints', () => {
+test('buildSegments cuts at the gap edges so no gap is included', () => {
   const r = D.buildSegments([{ start: 10, end: 12 }, { start: 20, end: 22 }], 30, 2);
-  assert.deepEqual(r, [{ start: 0, end: 11 }, { start: 11, end: 21 }, { start: 21, end: 30 }]);
+  assert.deepEqual(r, [{ start: 0, end: 10 }, { start: 12, end: 20 }, { start: 22, end: 30 }]);
 });
 
 test('buildSegments has no leading segment when a gap starts at 0', () => {
   const r = D.buildSegments([{ start: 0, end: 2 }, { start: 10, end: 12 }], 30, 2);
-  assert.deepEqual(r, [{ start: 1, end: 11 }, { start: 11, end: 30 }]);
+  assert.deepEqual(r, [{ start: 2, end: 10 }, { start: 12, end: 30 }]);
 });
 
 test('buildSegments has no trailing segment when a gap reaches the end', () => {
   const r = D.buildSegments([{ start: 10, end: 12 }, { start: 28, end: 30 }], 30, 2);
-  assert.deepEqual(r, [{ start: 0, end: 11 }, { start: 11, end: 29 }]);
+  assert.deepEqual(r, [{ start: 0, end: 10 }, { start: 12, end: 28 }]);
 });
 
 test('buildSegments with no gaps is the whole video', () => {
@@ -85,7 +85,7 @@ test('buildSegments with no gaps is the whole video', () => {
 
 test('buildSegments drops segments shorter than minSegment', () => {
   const r = D.buildSegments([{ start: 10, end: 12 }, { start: 12.5, end: 13 }], 30, 2);
-  assert.deepEqual(r, [{ start: 0, end: 11 }, { start: 12.75, end: 30 }]);
+  assert.deepEqual(r, [{ start: 0, end: 10 }, { start: 13, end: 30 }]);
 });
 
 test('sanitizeName replaces unsafe characters and falls back when empty', () => {
@@ -130,4 +130,25 @@ test('normalizeSettings replaces blank or invalid values and clamps ranges', () 
   assert.deepEqual(r, { noiseDb: -35, minGap: 0.3, minSegment: 0.5, useBlack: true });
   assert.equal(D.normalizeSettings({ noiseDb: 0, minGap: 1, minSegment: 2, useBlack: false }).noiseDb, -10);
   assert.equal(D.normalizeSettings({ noiseDb: -200, minGap: 1, minSegment: 2, useBlack: false }).noiseDb, -90);
+});
+
+// ---- No gap in output parts ----
+
+test('buildSegments makes no leading part when the first gap starts within the edge tolerance', () => {
+  assert.deepEqual(D.buildSegments([{ start: 0.04, end: 3 }], 30, 2), [{ start: 3, end: 30 }]);
+});
+
+test('buildSegments makes no trailing part when the last gap ends within the edge tolerance', () => {
+  assert.deepEqual(D.buildSegments([{ start: 27, end: 29.96 }], 30, 2), [{ start: 0, end: 27 }]);
+});
+
+test('buildSegments keeps a real leading part just beyond the edge tolerance', () => {
+  assert.deepEqual(D.buildSegments([{ start: 3, end: 5 }], 30, 2), [{ start: 0, end: 3 }, { start: 5, end: 30 }]);
+});
+
+test('no part overlaps any gap', () => {
+  const gaps = [{ start: 8, end: 11 }, { start: 19, end: 22 }];
+  for (const seg of D.buildSegments(gaps, 30, 2)) {
+    for (const g of gaps) assert.ok(seg.end <= g.start || seg.start >= g.end);
+  }
 });
