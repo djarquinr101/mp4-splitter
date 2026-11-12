@@ -137,7 +137,7 @@
 - Create: `tests/make-test-video.sh`
 - Modify: `README.md`
 
-- [ ] **Step 1: Write `tests/make-test-video.sh`** — uses ffmpeg `lavfi` to build a 40 s video: three 8 s tone+colour segments separated by two 3 s silent+black gaps (known cut midpoints at about 9.5 s and 20.5 s are adjacent-gap midpoints; compute them in a comment). Concatenate with the `concat` filter and encode with `-g 25` so keyframes are frequent.
+- [ ] **Step 1: Write `tests/make-test-video.sh`** — uses ffmpeg `lavfi` to build a 30 s video: three 8 s tone+colour segments separated by two 3 s silent+black gaps (gaps at 8-11 s and 19-22 s, so the expected cut points are 9.5 s and 20.5 s; state them in a comment). Concatenate with the `concat` filter and encode with `-g 25` so keyframes are frequent.
 - [ ] **Step 2: Run the end-to-end check** over `http://localhost` (any static server; `python -m http.server` is fine): load the video; expected three segments whose starts and ends are within about 0.5 s of the known values; export as a zip; the three files play and are about 8-9 s each.
 - [ ] **Step 3: Check the review-focus cases by hand**: a video with no audio (`-an` version of the test video) still yields segments from black frames; a video with no gaps gives one segment and the note; picking a second file during detection leaves only the second file's rows.
 - [ ] **Step 4: Update `README.md`**: what the tool does, that processing is local, the detection settings, the keyframe caveat, and how to run the unit tests (`node --test tests/`).
