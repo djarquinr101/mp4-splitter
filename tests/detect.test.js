@@ -96,3 +96,38 @@ test('sanitizeName replaces unsafe characters and falls back when empty', () => 
 test('uniqueNames numbers case-insensitive duplicates', () => {
   assert.deepEqual(D.uniqueNames(['a', 'A', 'b', 'a']), ['a', 'A (2)', 'b', 'a (3)']);
 });
+
+// ---- Final review fixes ----
+
+test('uniqueNames never produces a name that already exists', () => {
+  assert.deepEqual(D.uniqueNames(['a', 'a', 'a (2)']), ['a', 'a (2)', 'a (2) (2)']);
+  const r = D.uniqueNames(['a', 'A', 'a (2)']);
+  assert.equal(new Set(r.map((x) => x.toLowerCase())).size, 3);
+});
+
+test('buildSegments falls back to the whole video when a gap covers everything', () => {
+  assert.deepEqual(D.buildSegments([{ start: 0, end: 30 }], 30, 2), [{ start: 0, end: 30 }]);
+});
+
+test('buildSegments falls back to the whole video when every segment is too short', () => {
+  assert.deepEqual(D.buildSegments([{ start: 1, end: 2 }], 4, 5), [{ start: 0, end: 4 }]);
+});
+
+test('sanitizeName keeps letters from any script', () => {
+  assert.equal(D.sanitizeName('Глава 1', 'Part 1'), 'Глава 1');
+  assert.equal(D.sanitizeName('Café', 'Part 1'), 'Café');
+  assert.equal(D.sanitizeName('a/b', 'Part 1'), 'a_b');
+});
+
+test('formatTimeFine rounds before splitting into fields', () => {
+  assert.equal(D.formatTimeFine(119.996), '00:02:00.00');
+  assert.equal(D.formatTimeFine(9.52), '00:00:09.52');
+  assert.equal(D.formatTimeFine(3661.5), '01:01:01.50');
+});
+
+test('normalizeSettings replaces blank or invalid values and clamps ranges', () => {
+  const r = D.normalizeSettings({ noiseDb: NaN, minGap: 0, minSegment: -4, useBlack: true });
+  assert.deepEqual(r, { noiseDb: -35, minGap: 0.3, minSegment: 0.5, useBlack: true });
+  assert.equal(D.normalizeSettings({ noiseDb: 0, minGap: 1, minSegment: 2, useBlack: false }).noiseDb, -10);
+  assert.equal(D.normalizeSettings({ noiseDb: -200, minGap: 1, minSegment: 2, useBlack: false }).noiseDb, -90);
+});

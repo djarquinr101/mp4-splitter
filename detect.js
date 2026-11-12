@@ -76,25 +76,46 @@
     for (let i = 0; i + 1 < points.length; i++) {
       if (points[i + 1] - points[i] >= minSegment) segments.push({ start: points[i], end: points[i + 1] });
     }
-    return segments;
+    return segments.length > 0 ? segments : [{ start: 0, end: duration }];
   }
 
   function sanitizeName(name, fallback) {
-    const cleaned = name.trim().replace(/[^\w.\- ]+/g, '_');
+    const cleaned = name.trim().replace(/[^\p{L}\p{N}_.\- ]+/gu, '_');
     return cleaned === '' ? fallback : cleaned;
   }
 
+  // Sequentially renames later duplicates (case-insensitive) so no output name ever repeats.
   function uniqueNames(names) {
-    const seen = new Map();
+    const taken = new Set();
     return names.map((name) => {
-      const key = name.toLowerCase();
-      const count = (seen.get(key) || 0) + 1;
-      seen.set(key, count);
-      return count === 1 ? name : `${name} (${count})`;
+      let candidate = name;
+      let k = 2;
+      while (taken.has(candidate.toLowerCase())) candidate = `${name} (${k++})`;
+      taken.add(candidate.toLowerCase());
+      return candidate;
     });
   }
 
-  const api = { parseProbeLog, parseSilenceLog, parseBlackLog, intersectIntervals, buildGaps, buildSegments, sanitizeName, uniqueNames };
+  function formatTimeFine(sec) {
+    const t = Math.round(sec * 100) / 100; // round first so seconds can never print as 60.00
+    const h = String(Math.floor(t / 3600)).padStart(2, '0');
+    const m = String(Math.floor((t % 3600) / 60)).padStart(2, '0');
+    const r = (t % 60).toFixed(2).padStart(5, '0');
+    return `${h}:${m}:${r}`;
+  }
+
+  const clamp = (v, lo, hi, fallback) => (Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : fallback);
+
+  function normalizeSettings(s) {
+    return {
+      noiseDb: clamp(s.noiseDb, -90, -10, -35),
+      minGap: clamp(s.minGap, 0.3, 3600, 1),
+      minSegment: clamp(s.minSegment, 0.5, 3600, 2),
+      useBlack: Boolean(s.useBlack),
+    };
+  }
+
+  const api = { parseProbeLog, parseSilenceLog, parseBlackLog, intersectIntervals, buildGaps, buildSegments, sanitizeName, uniqueNames, formatTimeFine, normalizeSettings };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Detect = api;
 })(typeof window !== 'undefined' ? window : globalThis);

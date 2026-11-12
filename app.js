@@ -198,19 +198,20 @@ ffmpeg.setProgress(({ ratio }) => {
 });
 
 function readSettings() {
-    return {
-        noiseDb: Number(optNoise.value),
-        minGap: Number(optMinGap.value),
-        minSegment: Number(optMinSeg.value),
+    const num = (el) => (el.value.trim() === '' ? NaN : Number(el.value));
+    return Detect.normalizeSettings({
+        noiseDb: num(optNoise),
+        minGap: num(optMinGap),
+        minSegment: num(optMinSeg),
         useBlack: optBlack.checked,
-    };
+    });
 }
 
-function formatTimeFine(sec) {
-    const h = String(Math.floor(sec / 3600)).padStart(2, '0');
-    const m = String(Math.floor((sec % 3600) / 60)).padStart(2, '0');
-    const s = (sec % 60).toFixed(2).padStart(5, '0');
-    return `${h}:${m}:${s}`;
+// Shows the effective (clamped / defaulted) values back in the inputs.
+function syncSettingsInputs(s) {
+    optNoise.value = s.noiseDb;
+    optMinGap.value = s.minGap;
+    optMinSeg.value = s.minSegment;
 }
 
 // Runs one ffmpeg command and returns the log text it produced.
@@ -239,7 +240,7 @@ async function blackPass(base, span) {
 
 function renderSegments(segments) {
     segmentsContainer.innerHTML = '';
-    segments.forEach(seg => addSegmentRow(formatTimeFine(seg.start), formatTimeFine(seg.end)));
+    segments.forEach(seg => addSegmentRow(Detect.formatTimeFine(seg.start), Detect.formatTimeFine(seg.end)));
     listEdited = false;
 }
 
@@ -249,14 +250,29 @@ function rebuildSegments() {
     const s = readSettings();
     const gaps = Detect.buildGaps(rawSilence, rawBlack || [], probe, s);
     const segments = Detect.buildSegments(gaps, probe.duration, s.minSegment);
-    detectNote.textContent = gaps.length === 0 ? "No gaps found — showing the whole video. Add parts by hand if needed." : "";
+    const wholeVideo = segments.length === 1 && segments[0].start === 0 && segments[0].end === probe.duration;
+    detectNote.textContent = wholeVideo ? "No usable gaps found — showing the whole video. Add parts by hand if needed." : "";
     renderSegments(segments);
 }
 
-function setDetecting(on) {
-    detectProgress.classList.toggle('hidden', !on);
+// Every ffmpeg job (detection, settings passes, export) goes through one queue, and the UI stays
+// locked (export, file input, settings) until the last job - or a pending file pick - is finished.
+let busyJobs = 0;
+
+function setBusy(on) {
     processBtn.disabled = on;
+    videoInput.disabled = on;
     [optNoise, optMinGap, optMinSeg, optBlack].forEach(el => { el.disabled = on; });
+    if (!on) detectProgress.classList.add('hidden');
+}
+
+function beginBusy() { busyJobs++; setBusy(true); }
+function endBusy() { busyJobs--; if (busyJobs === 0) setBusy(false); }
+
+function enqueue(job) {
+    beginBusy();
+    lastRun = lastRun.then(job).catch((err) => console.error(err)).finally(endBusy);
+    return lastRun;
 }
 
 function ffmpegHasInput() {
@@ -270,7 +286,7 @@ function clearInputFile() {
 async function runDetection(file, runId) {
     const stale = () => runId !== currentRunId;
     if (stale()) return;
-    setDetecting(true);
+    detectProgress.classList.remove('hidden');
     detectProgress.value = 0;
     probe = null; rawSilence = []; rawBlack = null; rawSilenceDb = null;
     try {
@@ -309,12 +325,15 @@ async function runDetection(file, runId) {
         detectNote.textContent = "";
         renderSegments(dur ? [{ start: 0, end: dur }] : []);
         setStatus(`Automatic detection failed (${err.message || err}). Add parts by hand.`, "error");
-    } finally {
-        setDetecting(false); // a queued newer run switches it back on immediately
     }
 }
 
 videoInput.addEventListener('change', async () => {
+    beginBusy(); // locked while the file's metadata is read, until its detection job takes over
+    try { await onFilePicked(); } finally { endBusy(); }
+});
+
+async function onFilePicked() {
     const file = videoInput.files[0];
     const runId = ++currentRunId;
     videoDuration = null;
@@ -334,8 +353,8 @@ videoInput.addEventListener('change', async () => {
     fileInfo.textContent = videoDuration === null
         ? `${file.name} — ${sizeMB} MB`
         : `${file.name} — ${sizeMB} MB — duration ${formatTime(videoDuration)}`;
-    lastRun = lastRun.then(() => runDetection(file, runId));
-});
+    enqueue(() => runDetection(file, runId));
+}
 
 // Settings changes: gap/segment lengths only rebuild; threshold and black toggle may need a pass.
 async function onSettingsChange() {
@@ -343,12 +362,13 @@ async function onSettingsChange() {
     if (listEdited && !confirm("Changing detection settings replaces the segments you edited. Continue?")) return;
     const runId = currentRunId;
     const s = readSettings();
+    syncSettingsInputs(s);
     const needSilence = probe.hasAudio && rawSilenceDb !== s.noiseDb;
     const needBlack = probe.hasVideo && (s.useBlack || !probe.hasAudio) && rawBlack === null;
     if (needSilence || needBlack) {
-        lastRun = lastRun.then(async () => {
+        enqueue(async () => {
             if (runId !== currentRunId) return;
-            setDetecting(true);
+            detectProgress.classList.remove('hidden');
             detectProgress.value = 0;
             try {
                 if (needSilence) { setStatus("Re-checking silence..."); await silencePass(0, needBlack ? 0.5 : 1); }
@@ -357,8 +377,6 @@ async function onSettingsChange() {
             } catch (err) {
                 console.error(err);
                 setStatus(`Detection failed (${err.message || err}).`, "error");
-            } finally {
-                setDetecting(false);
             }
         });
     } else {
@@ -393,7 +411,7 @@ function collectSegments() {
 }
 
 function safeBaseName(name) {
-    return name.replace(/\.mp4$/i, '').replace(/[^\w.\- ]+/g, '_') || 'video';
+    return Detect.sanitizeName(name.replace(/\.mp4$/i, ''), 'video');
 }
 
 function triggerDownload(blob, filename) {
@@ -417,53 +435,49 @@ processBtn.addEventListener('click', async () => {
     try { segments = collectSegments(); }
     catch (err) { setStatus(err.message, "error"); return; }
 
-    processBtn.disabled = true;
-    videoInput.disabled = true;
-    const base = safeBaseName(file.name);
-    const results = [];
+    enqueue(async () => {
+        const base = safeBaseName(file.name);
+        const results = [];
 
-    try {
-        await lastRun; // wait for any detection still using ffmpeg
-        if (!ffmpegHasInput()) {
-            setStatus("Loading video into memory...");
-            ffmpeg.FS('writeFile', 'input.mp4', await fetchFile(file));
-        }
-
-        // ffmpeg.wasm 0.11 runs one command at a time, so parts are processed sequentially.
-        for (const seg of segments) {
-            setStatus(`Cutting part ${seg.n} of ${segments.length} losslessly...`);
-            const tmpName = `part_${seg.n}.mp4`;
-            try {
-                await ffmpeg.run(
-                    '-ss', seg.start, '-to', seg.end, '-i', 'input.mp4',
-                    '-map', '0:v?', '-map', '0:a?', '-map', '0:s?',
-                    '-c', 'copy',
-                    '-avoid_negative_ts', 'make_zero',
-                    tmpName
-                );
-                const data = ffmpeg.FS('readFile', tmpName);
-                results.push({ name: `${seg.name}.mp4`, data: new Uint8Array(data) });
-            } finally {
-                try { ffmpeg.FS('unlink', tmpName); } catch (_) { /* never created */ }
+        try {
+            if (!ffmpegHasInput()) {
+                setStatus("Loading video into memory...");
+                ffmpeg.FS('writeFile', 'input.mp4', await fetchFile(file));
             }
-        }
 
-        if (results.length === 1) {
-            triggerDownload(new Blob([results[0].data], { type: 'video/mp4' }), results[0].name);
-        } else {
-            setStatus("Packing parts into a zip...");
-            const zip = new JSZip();
-            // MP4 is already compressed; store without re-deflating.
-            results.forEach(r => zip.file(r.name, r.data, { compression: 'STORE' }));
-            const zipBlob = await zip.generateAsync({ type: 'blob' });
-            triggerDownload(zipBlob, `${base}_parts.zip`);
+            // ffmpeg.wasm 0.11 runs one command at a time, so parts are processed sequentially.
+            for (const seg of segments) {
+                setStatus(`Cutting part ${seg.n} of ${segments.length} losslessly...`);
+                const tmpName = `part_${seg.n}.mp4`;
+                try {
+                    await ffmpeg.run(
+                        '-ss', seg.start, '-to', seg.end, '-i', 'input.mp4',
+                        '-map', '0:v?', '-map', '0:a?', '-map', '0:s?',
+                        '-c', 'copy',
+                        '-avoid_negative_ts', 'make_zero',
+                        tmpName
+                    );
+                    const data = ffmpeg.FS('readFile', tmpName);
+                    results.push({ name: `${seg.name}.mp4`, data: new Uint8Array(data) });
+                } finally {
+                    try { ffmpeg.FS('unlink', tmpName); } catch (_) { /* never created */ }
+                }
+            }
+
+            if (results.length === 1) {
+                triggerDownload(new Blob([results[0].data], { type: 'video/mp4' }), results[0].name);
+            } else {
+                setStatus("Packing parts into a zip...");
+                const zip = new JSZip();
+                // MP4 is already compressed; store without re-deflating.
+                results.forEach(r => zip.file(r.name, r.data, { compression: 'STORE' }));
+                const zipBlob = await zip.generateAsync({ type: 'blob' });
+                triggerDownload(zipBlob, `${base}_parts.zip`);
+            }
+            setStatus(`🎉 Exported ${results.length} part${results.length > 1 ? 's' : ''}.`, "ok");
+        } catch (err) {
+            console.error(err);
+            setStatus(`Something went wrong: ${err.message || err}. Try a smaller file or reload the page.`, "error");
         }
-        setStatus(`🎉 Exported ${results.length} part${results.length > 1 ? 's' : ''}.`, "ok");
-    } catch (err) {
-        console.error(err);
-        setStatus(`Something went wrong: ${err.message || err}. Try a smaller file or reload the page.`, "error");
-    } finally {
-        processBtn.disabled = false;
-        videoInput.disabled = false;
-    }
+    });
 });
